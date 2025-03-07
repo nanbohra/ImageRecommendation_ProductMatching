@@ -43,9 +43,9 @@ for img in hs_images:
     top_img = img.crop(top_crop)
     bottom_img = img.crop(bottom_crop)
  
-    top_img_path = os.path.join(sample_images_dir, f"sample_{i}.jpg")
+    top_img_path = os.path.join(sample_images_dir, f"sample_{i:02d}.jpg")
     i+=1 
-    bottom_img_path = os.path.join(sample_images_dir, f"sample_{i}.jpg")
+    bottom_img_path = os.path.join(sample_images_dir, f"sample_{i:02d}.jpg")
     i+=1 
 
     top_img.save(top_img_path, "JPEG")
@@ -56,6 +56,6 @@ for img in hs_images:
 # Crop images to match half-page sample size
 for img in (fs_images):
     crop_img = img.crop(top_crop)
-    crop_img_path = os.path.join(sample_images_dir, f"sample_{i}.jpg")
+    crop_img_path = os.path.join(sample_images_dir, f"sample_{i:02d}.jpg")
     i+=1
     crop_img.save(crop_img_path, "JPEG")
