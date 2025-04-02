@@ -37,7 +37,7 @@ qclient = QdrantClient(
     api_key= os.getenv("QDRANT_API_KEY")
 )
 
-# Set up image processor and model (DINOv2 as of 07/03/2025)
+# Set up image processor and model (DINOv2 as of 7–MAR–2025)
 # Matches the model used to generate embeddings in get_img_embeddings.ipynb
 processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
 model = AutoModel.from_pretrained('facebook/dinov2-base')
@@ -98,7 +98,7 @@ def index():
 @app.route('/upload', methods=['POST'])
 def upload():
 
-    if "files" not in request.files:
+    if "file" not in request.files:
         response = jsonify({"message": "No file part in the request"})
         response.status_code = 400
 
@@ -112,7 +112,7 @@ def upload():
 
     # Generate embeddings for input image
     # Search for similar products in Qdrant database
-    input_embedding = get_embeddings(resized_image)
+    input_embedding = get_embeddings(resized_image).squeeze(0).tolist()
     similar_products = search(input_embedding)
 
     return jsonify({"similar_products": similar_products})
@@ -125,14 +125,17 @@ def get_similar(id):
 
     catalog_img = qclient.retrieve(
         collection_name=COLLECTION_NAME, 
-        ids=[id]
+        ids=[id],
+        with_vectors=True 
     )
+    print(catalog_img)
 
     # Invalid product ID returns error message
     if not catalog_img:
         return jsonify({"error": "Product not found"}), 404
     
     embedding = catalog_img[0].vector
+    print(embedding)
     search_results = search(embedding)
     
 
