@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.vscode/
+.env
+.sketchpad.py
+tests.py

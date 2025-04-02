@@ -13,20 +13,29 @@ from PIL import Image
 import io
 import torch
 from transformers import AutoImageProcessor, AutoModel
-import qdrant_client
+from qdrant_client import QdrantClient, models
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 # Defining constants
 SIMILARITY_THRESHOLD = 0.7
 COLLECTION_NAME = "sample_images_2"
 MATCHED_WIDTH = 1700
 MATCHED_HEIGHT = 920
+QDRANT_DB_URL = os.getenv("QDRANT_DB_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
 # Initialize Flask app
 app = Flask(__name__)
 
 
 # Initialize connection to Qdrant
-qdrant_client = qdrant_client.QdrantClient("http://localhost:6333")
+qclient = QdrantClient(
+    url= os.getenv("QDRANT_DB_URL"),
+    api_key= os.getenv("QDRANT_API_KEY")
+)
 
 # Set up image processor and model (DINOv2 as of 07/03/2025)
 # Matches the model used to generate embeddings in get_img_embeddings.ipynb
@@ -51,24 +60,29 @@ def get_embeddings(image):
 # Search for similar products in Qdrant database
 # Using embeddings generated from input image
 def search(input_embedding):
-    search_results = qdrant_client.search(
+    search_results = qclient.query_points(
         collection_name= COLLECTION_NAME,
-        query_vector= input_embedding,
-        limit= 10
-    )
+        query= input_embedding,
+        limit= 5,
+        # query_filter=models.Filter(
+        #     with_payload=True,
+        #     score_threshold= SIMILARITY_THRESHOLD
+        # )
+    ).points
 
-    # Filter out results with similarity score below threshold
-    filtered_results = [
-        {"id": item.id, "score": item.score}
-        for item in search_results if item.score >= SIMILARITY_THRESHOLD
-    ]
+
+    # filtered_results = [
+    #     {"id": item.id, "score": item.score}
+    #     for item in search_results if item.score >= SIMILARITY_THRESHOLD
+    # ]
 
     # If no similar products found above threshold
     # Return not found message to user
-    if not filtered_results:
+    if not search_results:
         return jsonify({"message": "No similar products found"})
-
-    return filtered_results
+    
+    payloads = [hit.payload for hit in search_results]
+    return payloads
 
 
 # Route for homepage
@@ -106,33 +120,43 @@ def upload():
 
 # Route 2: User selects product from catalog to find similar products
 # Returns similar products based on selected product embeddings
-@app.route('/get_similar/int:id', methods=['GET'])
+@app.route('/get_similar/<int:id>', methods=['GET'])
 def get_similar(id):
 
-    search_results = qdrant_client.search(
-        collection_name= COLLECTION_NAME,
-        query_vector= id,
-        limit= 5
+    catalog_img = qclient.retrieve(
+        collection_name=COLLECTION_NAME, 
+        ids=[id]
     )
 
     # Invalid product ID returns error message
-    if not search_results:
+    if not catalog_img:
         return jsonify({"error": "Product not found"}), 404
+    
+    embedding = catalog_img[0].vector
+    search_results = search(embedding)
+    
+
+    # search_results = qdrant_client.search(
+    #     collection_name= COLLECTION_NAME,
+    #     query_vector= id,
+    #     limit= 5
+    # )
+
 
     # Filter out results with similarity score below threshold
-    filtered_results = [
-        {"id": item.id, "score": item.score}
-        for item in search_results if item.score >= SIMILARITY_THRESHOLD
-    ]
+    # filtered_results = [
+    #     {"id": item.id, "score": item.score}
+    #     for item in search_results if item.score >= SIMILARITY_THRESHOLD
+    # ]
 
     # If no similar products found above threshold
     # Return not found message to user
-    if not filtered_results:
-        return jsonify({"message": "No similar products found"})
+    # if not filtered_results:
+    #     return jsonify({"message": "No similar products found"})
     
         # Potential to suggest new products to user at this stage
 
-    return filtered_results
+    return search_results
 
 
 

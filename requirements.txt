@@ -4,7 +4,7 @@ blinker==1.9.0
 certifi==2024.2.2
 charset-normalizer==3.3.2
 click==8.1.8
-contourpy==1.2.0
+contourpy==1.3.1
 cycler==0.12.1
 decorator==5.1.1
 filelock==3.17.0
@@ -26,7 +26,7 @@ joblib==1.4.2
 kiwisolver==1.4.5
 lazy_loader==0.3
 MarkupSafe==2.1.5
-matplotlib==3.8.1
+matplotlib==3.10.1
 mne==1.6.1
 mpmath==1.3.0
 networkx==3.4.2
@@ -42,6 +42,7 @@ protobuf==5.29.3
 pydantic==2.10.6
 pydantic_core==2.27.2
 pyparsing==3.1.1
+pytesseract==0.3.13
 python-dateutil==2.8.2
 pytz==2025.1
 qdrant-client==1.13.2
