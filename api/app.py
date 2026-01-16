@@ -1,29 +1,19 @@
-"""
-REST API for Image Recognition and Product Matching
-@File    : app.py
-@Date    : 2025-03-04
-@Author  : Nandini Bohra
-@Contact : nbohra@ucsd.edu
-
-@References : 
-"""
-
 from flask import Flask, request, jsonify
 from PIL import Image
 import io
+
 import torch
+import numpy as np
 from transformers import AutoImageProcessor, AutoModel
-from qdrant_client import QdrantClient, models
+from qdrant_client import QdrantClient
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
 # Defining constants
-SIMILARITY_THRESHOLD = 0.7
-COLLECTION_NAME = "sample_images_2"
-MATCHED_WIDTH = 1700
-MATCHED_HEIGHT = 920
+COLLECTION_NAME = "TextileProductRec"
+
 QDRANT_DB_URL = os.getenv("QDRANT_DB_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
@@ -33,56 +23,78 @@ app = Flask(__name__)
 
 # Initialize connection to Qdrant
 qclient = QdrantClient(
-    url= os.getenv("QDRANT_DB_URL"),
-    api_key= os.getenv("QDRANT_API_KEY")
+    url= QDRANT_DB_URL,
+    api_key= QDRANT_API_KEY
 )
 
 # Set up image processor and model (DINOv2 as of 7–MAR–2025)
-# Matches the model used to generate embeddings in get_img_embeddings.ipynb
+# Matches the model used to generate embeddings onto Qdrant
 processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
 model = AutoModel.from_pretrained('facebook/dinov2-base')
+model.eval()
 
+# Functions for UPLOAD endpoint specifically
 # Generate matching embeddings for input images using matching model
 # Processing reflects embeddings for catalog images to inspire consistency
-def get_embeddings(image):
-    input = processor(image, return_tensors="pt")
-    with torch.no_grad():
-        output = model(**input)
-    
-    # Remove CLS token embedding which is used for classification
-    # Taking average of patch embeddings
-    patch_embedding = output.last_hidden_state[:, 1:, :]
-    avg_patch_embedding = torch.mean(patch_embedding, dim=1)
+def load_image_for_embedding(source, max_size=224):
+    img = Image.open(source).convert("RGB")
+    img.thumbnail((max_size, max_size))
+    return img
 
-    return avg_patch_embedding
+def get_avg_emb(image):
+    inputs = processor(image, return_tensors="pt")
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    patches = outputs.last_hidden_state[:, 1:, :]
+    # print(f"Patches shape: {patches.shape}")
+    emb = torch.mean(patches, dim=1)
+
+    # Normalize embeddings
+    emb = emb / emb.norm(dim=-1, keepdim=True)
+    # print(f"Embedding shape (before squeeze): {emb.shape}")
+    return emb.squeeze(0).numpy()
+
+def get_avg_rgb(image):
+    return np.array(image).mean(axis=(0, 1)).astype(int)
+
+
+
+# Rerank search results by average RGB color distance of textiles
+# Embeddings prioritize searching on textile texture, so this boosts
+# color similarity
+def rerank_by_color(results, query_rgb, alpha=0.85):
+    query_rgb = np.array(query_rgb)
+
+    rescored = []
+    for hit in results:
+        r, g, b = hit.payload["r"], hit.payload["g"], hit.payload["b"]
+        item_rgb = np.array([r, g, b])
+
+        color_dist = np.linalg.norm(query_rgb - item_rgb)
+        color_sim = 1 / (1 + color_dist / 255)
+
+        final_score = alpha * hit.score + (1 - alpha) * color_sim
+        rescored.append((final_score, hit))
+
+    rescored.sort(key=lambda x: x[0], reverse=True)
+    return [hit for _, hit in rescored]
 
 
 # Search for similar products in Qdrant database
 # Using embeddings generated from input image
 def search(input_embedding):
-    search_results = qclient.query_points(
+    response = qclient.query_points(
         collection_name= COLLECTION_NAME,
         query= input_embedding,
-        limit= 5,
-        # query_filter=models.Filter(
-        #     with_payload=True,
-        #     score_threshold= SIMILARITY_THRESHOLD
-        # )
-    ).points
+        limit= 10,
+        with_payload=True
+    )
+
+    return response.points if response.points else []
 
 
-    # filtered_results = [
-    #     {"id": item.id, "score": item.score}
-    #     for item in search_results if item.score >= SIMILARITY_THRESHOLD
-    # ]
-
-    # If no similar products found above threshold
-    # Return not found message to user
-    if not search_results:
-        return jsonify({"message": "No similar products found"})
-    
-    payloads = [hit.payload for hit in search_results]
-    return payloads
 
 
 # Route for homepage
@@ -92,6 +104,7 @@ def search(input_embedding):
 def index():
 
     return "Homepage"
+
 
 # Route 1: User uploads non-catalog image to find similar products
 # Returns similar products based on input image embeddings
@@ -104,18 +117,38 @@ def upload():
 
         return response
     
-    # Load image from upload and convert to PIL image
-    # Resize image to match size of catalog samples in DB
-    file = request.files['file']
-    image = Image.open(io.BytesIO(file.read())).convert("RGB")
-    resized_image = image.resize((MATCHED_WIDTH, MATCHED_HEIGHT))
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"message": "Empty file uploaded"}), 400
+    
 
-    # Generate embeddings for input image
-    # Search for similar products in Qdrant database
-    input_embedding = get_embeddings(resized_image).squeeze(0).tolist()
-    similar_products = search(input_embedding)
+    image = load_image_for_embedding(io.BytesIO(request.files['file'].read()))
+    embedding = get_avg_emb(image).tolist()
+    results = search(embedding)
 
-    return jsonify({"similar_products": similar_products})
+    if not results:
+        response = jsonify({
+            "similar_products": [], 
+            "message": "No similar products found"
+            })
+        response.status_code = 200
+        return response
+
+    query_rgb = get_avg_rgb(image)
+    results = rerank_by_color(results, query_rgb)
+
+    return jsonify({
+        "similar_products": [
+            {
+                "id": hit.id,
+                "score": hit.score,
+                "image path": hit.payload["image path"],
+                "color": hit.payload["color label"],
+                "material": hit.payload["material"]
+            }
+            for hit in results
+        ]
+    })
 
 
 # Route 2: User selects product from catalog to find similar products
@@ -123,43 +156,50 @@ def upload():
 @app.route('/get_similar/<int:id>', methods=['GET'])
 def get_similar(id):
 
-    catalog_img = qclient.retrieve(
+    points = qclient.retrieve(
         collection_name=COLLECTION_NAME, 
         ids=[id],
-        with_vectors=True 
+        with_vectors=True,
+        with_payload=True
     )
-    print(catalog_img)
 
     # Invalid product ID returns error message
-    if not catalog_img:
-        return jsonify({"error": "Product not found"}), 404
+    if not points:
+        response = jsonify({"message": "Product not found"})
+        response.status_code = 404
+
+        return response
     
-    embedding = catalog_img[0].vector
-    print(embedding)
-    search_results = search(embedding)
+    embedding = points[0].vector
+    payload = points[0].payload
+
+    query_rgb = (payload["r"], payload["g"], payload["b"])
+
+    results = search(embedding)
+    results = [hit for hit in results if hit.id != id]
+
+    if not results:
+        response = jsonify({
+            "similar_products": [], 
+            "message": "No similar products found"
+            })
+        response.status_code = 200
+        return response
     
+    results = rerank_by_color(results, query_rgb)
 
-    # search_results = qdrant_client.search(
-    #     collection_name= COLLECTION_NAME,
-    #     query_vector= id,
-    #     limit= 5
-    # )
-
-
-    # Filter out results with similarity score below threshold
-    # filtered_results = [
-    #     {"id": item.id, "score": item.score}
-    #     for item in search_results if item.score >= SIMILARITY_THRESHOLD
-    # ]
-
-    # If no similar products found above threshold
-    # Return not found message to user
-    # if not filtered_results:
-    #     return jsonify({"message": "No similar products found"})
-    
-        # Potential to suggest new products to user at this stage
-
-    return search_results
+    return jsonify({
+        "similar_products": [
+            {
+                "id": hit.id,
+                "score": hit.score,
+                "image_url": hit.payload["image_url"],
+                "color": hit.payload["color_label"],
+                "material": hit.payload["material"]
+            }
+            for hit in results
+        ]
+    })
 
 
 
