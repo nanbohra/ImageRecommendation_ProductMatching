@@ -126,6 +126,9 @@ def upload():
     embedding = get_avg_emb(image).tolist()
     results = search(embedding)
 
+    print("Embedding norm:", np.linalg.norm(np.array(embedding)))
+    print("Top scores:", [hit.score for hit in results[:3]])
+
     if not results:
         response = jsonify({
             "similar_products": [], 
@@ -178,6 +181,10 @@ def get_similar(id):
     results = search(embedding)
     results = [hit for hit in results if hit.id != id]
 
+    print("Query ID:", id)
+    print("Top scores:", [hit.score for hit in results[:3]])
+
+
     if not results:
         response = jsonify({
             "similar_products": [], 
@@ -193,8 +200,8 @@ def get_similar(id):
             {
                 "id": hit.id,
                 "score": hit.score,
-                "image_url": hit.payload["image_url"],
-                "color": hit.payload["color_label"],
+                "image path": hit.payload["image path"],
+                "color": hit.payload["color label"],
                 "material": hit.payload["material"]
             }
             for hit in results
